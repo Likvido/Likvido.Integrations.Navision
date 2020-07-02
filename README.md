@@ -1,0 +1,1 @@
+# Likvido.Integrations.Navision
