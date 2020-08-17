@@ -1,0 +1,2335 @@
+OBJECT Table 50000 Likvido Log
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18-06-20;
+    Time=11:55:49;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+  }
+  FIELDS
+  {
+    { 1   ;   ;Batch ID            ;Text250       ;DataClassification=ToBeClassified }
+    { 2   ;   ;Filename            ;Text250       ;DataClassification=ToBeClassified }
+    { 3   ;   ;JSON                ;BLOB          ;DataClassification=ToBeClassified;
+                                                   SubType=Memo }
+    { 4   ;   ;StorageResponse     ;Text250       ;DataClassification=ToBeClassified }
+  }
+  KEYS
+  {
+    {    ;Batch ID                                ;Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Table 50001 Likvido Setup
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25-06-20;
+    Time=10:28:38;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+  }
+  FIELDS
+  {
+    { 1   ;   ;Primary Key         ;Code10        ;DataClassification=ToBeClassified }
+    { 2   ;   ;Sas key             ;Text250       ;DataClassification=ToBeClassified }
+    { 3   ;   ;Default Currency Code;Code10       ;TableRelation=Currency;
+                                                   DataClassification=ToBeClassified;
+                                                   CaptionML=[DAN=Valutakode;
+                                                              ENU=Currency Code];
+                                                   Editable=No }
+  }
+  KEYS
+  {
+    {    ;Primary Key                             ;Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Codeunit 50000 Likvido
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25-06-20;
+    Time=10:39:48;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            CustomersWithOpenBalance@100000000 : TEMPORARY Record 18;
+          BEGIN
+            IF LikvidoSetup.GET() THEN BEGIN
+              BatchName:=FORMAT(CREATEDATETIME(TODAY,TIME),0,'<year4>-<month,2>-<day,2>/<hours24>:<minutes,2>');
+              GetOpenCustomers(CustomersWithOpenBalance);
+              GenerateCustomerJSON(CustomersWithOpenBalance);
+              GenerateInvoiceJSON(CustomersWithOpenBalance);
+            END ELSE BEGIN
+              ERROR('Likvido setup is missing.');
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      BatchName@100000000 : Text;
+      LikvidoSetup@100000001 : Record 50001;
+
+    LOCAL PROCEDURE GenerateInvoiceJSON@100000002(VAR CustomersWithOpenBalance@100000001 : Record 18);
+    VAR
+      CustLedgerEntry@100000000 : Record 21;
+      SalesInvoiceHeader@100000002 : Record 112;
+      SalesInvoiceLine@100000010 : Record 113;
+      JSON@100000003 : Text;
+      JsonResponse@100000004 : DotNet "'Newtonsoft.Json, Version=10.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JObject";
+      JsonTextWriter@100000005 : DotNet "'Newtonsoft.Json, Version=10.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      FileName@100000006 : Text;
+      OutStream@100000007 : OutStream;
+      LikvidoLog@100000008 : Record 50000;
+      CountryRegion@100000009 : Record 9;
+      TempFile@100000011 : File;
+      RecordLink@100000015 : Record 2000000068;
+      NoteText@100000014 : BigText;
+      Stream@100000013 : InStream;
+      RecRef@100000012 : RecordRef;
+      NoteHeader@100000016 : Text[250];
+      NoteCounter@100000017 : Integer;
+    BEGIN
+      JsonResponse := JsonResponse.JObject();
+      JsonTextWriter := JsonResponse.CreateWriter();
+      JsonTextWriter.WritePropertyName('collection');
+      JsonTextWriter.WriteStartArray();
+
+      IF CustomersWithOpenBalance.FIND('-') THEN
+      REPEAT
+        CustLedgerEntry.RESET();
+        CustLedgerEntry.SETRANGE(Open,TRUE);
+        CustLedgerEntry.SETFILTER("Document Type",'%1|%2',CustLedgerEntry."Document Type"::Invoice,CustLedgerEntry."Document Type"::"Credit Memo");
+        CustLedgerEntry.SETRANGE("Customer No.",CustomersWithOpenBalance."No.");
+
+        IF CustLedgerEntry.FIND('-') THEN
+        REPEAT
+          IF SalesInvoiceHeader.GET(CustLedgerEntry."Document No.") THEN BEGIN
+            SalesInvoiceHeader.CALCFIELDS(Amount,"Amount Including VAT","Remaining Amount");
+            JsonTextWriter.WriteStartObject();
+            JsonTextWriter.WritePropertyName('id');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."No.");
+
+            JsonTextWriter.WritePropertyName('reference');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Your Reference");
+
+            JsonTextWriter.WritePropertyName('date');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Document Date");
+
+            JsonTextWriter.WritePropertyName('dueDate');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Due Date");
+
+            JsonTextWriter.WritePropertyName('currency');
+            IF SalesInvoiceHeader."Currency Code" = '' THEN
+              JsonTextWriter.WriteValue(SalesInvoiceHeader."Currency Code")
+            ELSE
+              JsonTextWriter.WriteValue(LikvidoSetup."Default Currency Code");
+
+            JsonTextWriter.WritePropertyName('netAmount');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader.Amount);
+
+            JsonTextWriter.WritePropertyName('grossAmount');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Amount Including VAT");
+
+            JsonTextWriter.WritePropertyName('vatAmount');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Amount Including VAT"-SalesInvoiceHeader.Amount);
+
+            JsonTextWriter.WritePropertyName('reminder');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Remaining Amount");
+
+            IF SalesInvoiceHeader.Comment THEN BEGIN
+              JsonTextWriter.WritePropertyName('comment');
+              JsonTextWriter.WriteValue('');
+            END;
+
+            JsonTextWriter.WritePropertyName('customerId');
+            JsonTextWriter.WriteValue(SalesInvoiceHeader."Bill-to Customer No.");
+
+            IF SalesInvoiceHeader."Sell-to Customer No." <> SalesInvoiceHeader."Bill-to Customer No." THEN BEGIN
+              JsonTextWriter.WritePropertyName('recipient:');
+              JsonTextWriter.WriteValue('Bill and Sell are not the same insert recipient');
+            END;
+            //Delivery
+            JsonTextWriter.WritePropertyName('delivery');
+              JsonTextWriter.WriteStartObject();
+                JsonTextWriter.WritePropertyName('address');
+                JsonTextWriter.WriteValue(SalesInvoiceHeader."Ship-to Address");
+                JsonTextWriter.WritePropertyName('zip');
+                JsonTextWriter.WriteValue(SalesInvoiceHeader."Ship-to Post Code");
+                JsonTextWriter.WritePropertyName('city');
+                JsonTextWriter.WriteValue(SalesInvoiceHeader."Ship-to City");
+                JsonTextWriter.WritePropertyName('state');
+                JsonTextWriter.WriteValue('');
+                IF CountryRegion.GET(SalesInvoiceHeader."Ship-to Country/Region Code") THEN BEGIN
+                  JsonTextWriter.WritePropertyName('country');
+                  JsonTextWriter.WriteValue(CountryRegion.Name);
+                END;
+                JsonTextWriter.WritePropertyName('countryCode');
+                JsonTextWriter.WriteValue(SalesInvoiceHeader."Ship-to Country/Region Code");
+                JsonTextWriter.WritePropertyName('deliveryDate');
+                JsonTextWriter.WriteValue(SalesInvoiceHeader."Shipment Date");
+              JsonTextWriter.WriteEndObject();
+
+            //Lines
+            JsonTextWriter.WritePropertyName('lines');
+                JsonTextWriter.WriteStartArray();
+                SalesInvoiceLine.SETFILTER("Document No.",SalesInvoiceHeader."No.");
+                IF SalesInvoiceLine.FIND('-') THEN
+                  REPEAT
+                    JsonTextWriter.WriteStartObject();
+                      JsonTextWriter.WritePropertyName('linenumber');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."Line No.");
+
+                      JsonTextWriter.WritePropertyName('unitNetPrice');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."Unit Price");
+                      JsonTextWriter.WritePropertyName('vatAmount');
+                      JsonTextWriter.WriteValue(FORMAT(SalesInvoiceLine."Amount Including VAT"-SalesInvoiceLine.Amount));
+                      JsonTextWriter.WritePropertyName('vatRate');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."VAT %");
+                      JsonTextWriter.WritePropertyName('totalNetAmount');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."Unit Price"*SalesInvoiceLine.Quantity);
+                      JsonTextWriter.WritePropertyName('unit');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."Unit of Measure");
+                      JsonTextWriter.WritePropertyName('quantity');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine.Quantity);
+                      JsonTextWriter.WritePropertyName('currency');
+                      JsonTextWriter.WriteValue(SalesInvoiceHeader."Currency Code");
+                      JsonTextWriter.WritePropertyName('comment');
+                      JsonTextWriter.WriteValue('');
+                      JsonTextWriter.WritePropertyName('product');
+                        JsonTextWriter.WriteStartObject();
+                          JsonTextWriter.WritePropertyName('name');
+                          JsonTextWriter.WriteValue(SalesInvoiceLine.Description);
+                          JsonTextWriter.WritePropertyName('number');
+                          JsonTextWriter.WriteValue(SalesInvoiceLine."No.");
+                        JsonTextWriter.WriteEndObject();
+                      JsonTextWriter.WritePropertyName('discountType');
+                      JsonTextWriter.WriteValue('Percent');
+                      JsonTextWriter.WritePropertyName('discountValue');
+                      JsonTextWriter.WriteValue(SalesInvoiceLine."Line Discount Amount");
+                    JsonTextWriter.WriteEndObject();
+                  UNTIL SalesInvoiceLine.NEXT <= 0;
+                  JsonTextWriter.WriteEndArray();
+            //Notes START
+            JsonTextWriter.WritePropertyName('notes');
+              JsonTextWriter.WriteStartArray();
+                NoteCounter := 1;
+                RecRef.GETTABLE(SalesInvoiceHeader);
+                RecordLink.SETRANGE("Record ID",RecRef.RECORDID);
+                IF RecordLink.FINDFIRST THEN BEGIN
+                  REPEAT
+                    RecordLink.CALCFIELDS(Note);
+                    IF RecordLink.Note.HASVALUE THEN BEGIN
+                      CLEAR(NoteText);
+                      RecordLink.Note.CREATEINSTREAM(Stream);
+                      NoteText.READ(Stream);
+                      NoteText.GETSUBTEXT(NoteText, 2);
+                      JsonTextWriter.WriteStartObject();
+                        JsonTextWriter.WritePropertyName('sortOrder');
+                        JsonTextWriter.WriteValue(FORMAT(NoteCounter));
+                        JsonTextWriter.WritePropertyName('header');
+                        JsonTextWriter.WriteValue(RecordLink.Description);
+                        JsonTextWriter.WritePropertyName('text');
+                        JsonTextWriter.WriteValue(FORMAT(NoteText));
+                      JsonTextWriter.WriteEndObject();
+                     END;
+                     NoteCounter := NoteCounter+1;
+                  UNTIL RecordLink.NEXT = 0;
+                END;
+              JsonTextWriter.WriteEndArray();
+            //Notes END
+            {
+            JsonTextWriter.WritePropertyName('references:');
+              JsonTextWriter.WriteStartArray();
+                JsonTextWriter.WriteStartObject();
+                  JsonTextWriter.WritePropertyName('sortOrder');
+                  JsonTextWriter.WriteValue('');
+                  JsonTextWriter.WritePropertyName('header');
+                  JsonTextWriter.WriteValue('');
+                  JsonTextWriter.WritePropertyName('text');
+                  JsonTextWriter.WriteValue('');
+                JsonTextWriter.WriteEndObject();
+              JsonTextWriter.WriteEndArray();
+            }
+            //End invoice
+            JsonTextWriter.WriteEndObject();
+
+          END;
+        UNTIL CustLedgerEntry.NEXT <= 0;
+      UNTIL CustomersWithOpenBalance.NEXT <= 0;
+
+      JsonTextWriter.WriteEndArray();
+
+      FileName := BatchName+'/'+FORMAT(CREATEDATETIME(TODAY,TIME),0,'<year4>-<month,2>-<day,2>T<hours24>:<minutes,2>:<seconds,2>')+'-invoices.json';
+      LikvidoLog.INIT;
+      LikvidoLog."Batch ID" := BatchName;
+      LikvidoLog.Filename := FileName;
+      LikvidoLog.JSON.CREATEOUTSTREAM(OutStream);
+      OutStream.WRITE(JsonResponse.ToString());
+
+
+      //ERASE('C:\temp\invoice.json');
+      IF TempFile.CREATE('C:\temp\invoice.json') THEN BEGIN
+        TempFile.WRITE(JsonResponse.ToString());
+        TempFile.CLOSE();
+        LikvidoLog.StorageResponse := UploadToAzureBlob('C:\temp\invoice.json',FileName,'application/navision.v1.invoices.dump');
+        //TempFile.CLOSE();
+      END;
+
+      LikvidoLog.INSERT;
+      //MESSAGE(JsonResponse.ToString());
+    END;
+
+    LOCAL PROCEDURE GenerateCustomerJSON@100000023(VAR CustomersWithOpenBalance@100000000 : Record 18);
+    VAR
+      CustLedgerEntry@100000011 : Record 21;
+      SalesInvoiceHeader@100000010 : Record 112;
+      SalesInvoiceLine@100000009 : Record 113;
+      JSON@100000008 : Text;
+      JsonResponse@100000007 : DotNet "'Newtonsoft.Json, Version=10.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JObject";
+      JsonTextWriter@100000006 : DotNet "'Newtonsoft.Json, Version=10.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      FileName@100000005 : Text;
+      OutStream@100000004 : OutStream;
+      LikvidoLog@100000003 : Record 50000;
+      CountryRegion@100000002 : Record 9;
+      TempFile@100000001 : File;
+    BEGIN
+      JsonResponse := JsonResponse.JObject();
+      JsonTextWriter := JsonResponse.CreateWriter();
+      JsonTextWriter.WritePropertyName('collection');
+      JsonTextWriter.WriteStartArray();
+
+      IF CustomersWithOpenBalance.FIND('-') THEN
+      REPEAT
+        CustomersWithOpenBalance.CALCFIELDS(Balance,"Balance (LCY)","Balance Due","Balance Due (LCY)");
+
+        JsonTextWriter.WriteStartObject();
+          JsonTextWriter.WritePropertyName('id');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."No.");
+
+          JsonTextWriter.WritePropertyName('reference');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.Contact);
+
+          //JsonTextWriter.WritePropertyName('groupNumber');
+          //JsonTextWriter.WriteValue(CustomersWithOpenBalance."No.");
+
+          JsonTextWriter.WritePropertyName('type');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."No.");
+          JsonTextWriter.WritePropertyName('firstName');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.Name);
+          JsonTextWriter.WritePropertyName('lastName');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Name 2");
+          JsonTextWriter.WritePropertyName('companyName');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.Name);
+          JsonTextWriter.WritePropertyName('companyRegistrationNumber');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."VAT Registration No.");
+          JsonTextWriter.WritePropertyName('phone');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Phone No.");
+          JsonTextWriter.WritePropertyName('email');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."E-Mail");
+          JsonTextWriter.WritePropertyName('currency');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Currency Code");
+          JsonTextWriter.WritePropertyName('address');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.Address);
+          JsonTextWriter.WritePropertyName('zip');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Post Code");
+          JsonTextWriter.WritePropertyName('city');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.City);
+          JsonTextWriter.WritePropertyName('state');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.County);
+          JsonTextWriter.WritePropertyName('country');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Country/Region Code");
+          JsonTextWriter.WritePropertyName('balance');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Balance (LCY)");
+          JsonTextWriter.WritePropertyName('dueAmount');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.CalcOverdueBalance());
+          JsonTextWriter.WritePropertyName('ean');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance.GLN);
+          JsonTextWriter.WritePropertyName('lastUpdated:');
+          JsonTextWriter.WriteValue(CustomersWithOpenBalance."Last Date Modified");
+        JsonTextWriter.WriteEndObject();
+      UNTIL CustomersWithOpenBalance.NEXT <= 0;
+      JsonTextWriter.WriteEndArray();
+
+      FileName := BatchName+'/'+FORMAT(CREATEDATETIME(TODAY,TIME),0,'<year4>-<month,2>-<day,2>T<hours24>:<minutes,2>:<seconds,2>')+'-customers.json';
+      LikvidoLog.INIT;
+      LikvidoLog."Batch ID" := BatchName;
+      LikvidoLog.Filename := FileName;
+      LikvidoLog.JSON.CREATEOUTSTREAM(OutStream);
+      OutStream.WRITE(JsonResponse.ToString());
+
+      //ERASE('C:\temp\customer.json');
+      IF TempFile.CREATE('C:\temp\customer.json') THEN BEGIN
+        TempFile.WRITE(JsonResponse.ToString());
+        TempFile.CLOSE();
+        LikvidoLog.StorageResponse := UploadToAzureBlob('C:\temp\customer.json',FileName,'application/navision.v1.customers.dump');
+      END;
+      //LikvidoLog.INSERT;
+    END;
+
+    LOCAL PROCEDURE GetOpenCustomers@100000003(VAR CustomersWithOpenBalance@100000002 : Record 18);
+    VAR
+      Customer@100000000 : Record 18;
+      OverdueBalance@100000001 : Decimal;
+    BEGIN
+      Customer.RESET();
+      Customer.SETFILTER(Balance,'>0');
+      IF Customer.FIND('-') THEN
+      REPEAT
+        Customer.CALCFIELDS("Balance Due (LCY)");
+        CustomersWithOpenBalance.COPY(Customer);
+        CustomersWithOpenBalance.INSERT();
+      UNTIL Customer.NEXT <= 0;
+    END;
+
+    LOCAL PROCEDURE UploadToAzureBlob@100000001(FilePath@100000008 : Text;FileName@100000009 : Text;Format@100000004 : Text) : Text;
+    VAR
+      AzureBlobUploader@100000007 : DotNet "'Likvido, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'.likvido.v1.Uploader";
+      URI@100000006 : Text;
+      JSON@100000005 : Text;
+      ContentEncoding@100000002 : Text;
+      MyFile@100000001 : File;
+      MyStream@100000000 : InStream;
+      isLast@100000003 : Boolean;
+      LikvidoSetup@100000010 : Record 50001;
+    BEGIN
+      IF LikvidoSetup.GET() THEN BEGIN
+        AzureBlobUploader := AzureBlobUploader.Uploader;
+        MyFile.OPEN(FilePath);
+        MyFile.CREATEINSTREAM(MyStream);
+        FileName := FileName;
+        URI := LikvidoSetup."Sas key";
+        //URI := 'https://navisionpoc.blob.core.windows.net/1-test-661a1789-70d1-42b6-9a43-1bb41057a8db?sv=2019-02-02&sr=c&si=uploader2020-05-26T07%3A21%3A42&sig=A2zqpvZC68wiRLtLJ71%2BjN3qEeA0OoYUpBPaou76LH0%3D';
+        ContentEncoding := '';
+        EXIT(AzureBlobUploader.Upload(URI,FileName,Format,MyStream,ContentEncoding,TRUE));
+      END ELSE BEGIN
+        ERROR('Sas key missing');
+      END;
+    END;
+
+    LOCAL PROCEDURE ReadNotes@100000006(SalesHeader@100000000 : Record 36);
+    VAR
+      RecordLink@100000001 : Record 2000000068;
+      NoteText@100000002 : BigText;
+      Stream@100000003 : InStream;
+      RecRef@100000004 : RecordRef;
+    BEGIN
+      RecRef.GETTABLE(SalesHeader);
+      RecordLink.SETRANGE("Record ID",RecRef.RECORDID);
+      IF RecordLink.FINDFIRST THEN BEGIN
+        REPEAT
+          RecordLink.CALCFIELDS(Note);
+          IF RecordLink.Note.HASVALUE THEN BEGIN
+            CLEAR(NoteText);
+            RecordLink.Note.CREATEINSTREAM(Stream);
+            NoteText.READ(Stream);
+            NoteText.GETSUBTEXT(NoteText, 2);
+            MESSAGE(FORMAT(NoteText));
+          END;
+        UNTIL RecordLink.NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Codeunit 50001 Likvido create test
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26-06-20;
+    Time=14:26:15;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            SalesHeader@100000000 : Record 36;
+            SalesLine@100000001 : Record 37;
+            SalesSetup@100000002 : Record 311;
+            NoSeriesMgt@100000003 : Codeunit 396;
+            I@100000004 : Integer;
+          BEGIN
+            SalesSetup.GET;
+
+            FOR I := 1 TO 1000 DO BEGIN
+
+              SalesHeader.INIT;
+              SalesHeader."Document Type" := SalesHeader."Document Type"::Order;
+              SalesHeader."No." := NoSeriesMgt.GetNextNo(SalesSetup."Order Nos.", TODAY, TRUE);
+              SalesHeader.VALIDATE("Sell-to Customer No.",'30000');
+              SalesHeader.INSERT;
+
+              SalesLine.INIT();
+              SalesLine."Document Type" := SalesLine."Document Type"::Order;
+              SalesLine.Type := SalesLine.Type::Item;
+              SalesLine."Document No." := SalesHeader."No.";
+              SalesLine."Line No." := 10000;
+              SalesLine.VALIDATE("No.", '1000');
+              SalesLine.VALIDATE(Quantity,1);
+              SalesLine.INSERT();
+            END;
+          END;
+
+  }
+  CODE
+  {
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Page 22 Customer List
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27-05-20;
+    Time=20:47:35;
+    Modified=Yes;
+    Version List=NAVW19.00.00.50221;
+  }
+  PROPERTIES
+  {
+    Editable=No;
+    CaptionML=[DAN=Debitoroversigt;
+               ENU=Customer List];
+    SourceTable=Table18;
+    PageType=List;
+    CardPageID=Customer Card;
+    PromotedActionCategoriesML=[DAN=Ny,Proces,Rapport,Godkend;
+                                ENU=New,Process,Report,Approve];
+    OnOpenPage=VAR
+                 CRMIntegrationManagement@1000 : Codeunit 5330;
+               BEGIN
+                 CRMIntegrationEnabled := CRMIntegrationManagement.IsCRMIntegrationEnabled;
+               END;
+
+    OnAfterGetRecord=BEGIN
+                       SetSocialListeningFactboxVisibility;
+                     END;
+
+    OnAfterGetCurrRecord=VAR
+                           CRMCouplingManagement@1001 : Codeunit 5331;
+                         BEGIN
+                           SetSocialListeningFactboxVisibility;
+
+                           CRMIsCoupledToRecord :=
+                             CRMCouplingManagement.IsRecordCoupledToCRM(RECORDID) AND CRMIntegrationEnabled;
+                           OpenApprovalEntriesExist := ApprovalsMgmt.HasOpenApprovalEntries(RECORDID);
+                         END;
+
+    ActionList=ACTIONS
+    {
+      { 1900000003;0 ;ActionContainer;
+                      ActionContainerType=RelatedInformation }
+      { 16      ;1   ;ActionGroup;
+                      CaptionML=[DAN=&Debitor;
+                                 ENU=&Customer];
+                      Image=Customer }
+      { 20      ;2   ;Action    ;
+                      CaptionML=[DAN=Be&m‘rkninger;
+                                 ENU=Co&mments];
+                      RunObject=Page 124;
+                      RunPageLink=Table Name=CONST(Customer),
+                                  No.=FIELD(No.);
+                      Image=ViewComments }
+      { 66      ;2   ;ActionGroup;
+                      CaptionML=[DAN=Dimensioner;
+                                 ENU=Dimensions];
+                      Image=Dimensions }
+      { 84      ;3   ;Action    ;
+                      ShortCutKey=Shift+Ctrl+D;
+                      CaptionML=[DAN=Dimensioner - enkelt;
+                                 ENU=Dimensions-Single];
+                      RunObject=Page 540;
+                      RunPageLink=Table ID=CONST(18),
+                                  No.=FIELD(No.);
+                      Image=Dimensions }
+      { 42      ;3   ;Action    ;
+                      AccessByPermission=TableData 348=R;
+                      CaptionML=[DAN=Dimensioner - &flere;
+                                 ENU=Dimensions-&Multiple];
+                      Image=DimensionSets;
+                      OnAction=VAR
+                                 Cust@1001 : Record 18;
+                                 DefaultDimMultiple@1002 : Page 542;
+                               BEGIN
+                                 CurrPage.SETSELECTIONFILTER(Cust);
+                                 DefaultDimMultiple.SetMultiCust(Cust);
+                                 DefaultDimMultiple.RUNMODAL;
+                               END;
+                                }
+      { 58      ;2   ;Action    ;
+                      CaptionML=[DAN=Bankkonti;
+                                 ENU=Bank Accounts];
+                      RunObject=Page 424;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=BankAccount }
+      { 29      ;2   ;Action    ;
+                      CaptionML=[DAN=Direct Debit-betalingsaftaler;
+                                 ENU=Direct Debit Mandates];
+                      RunObject=Page 1230;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=MakeAgreement }
+      { 23      ;2   ;Action    ;
+                      CaptionML=[DAN=Leveringsad&resser;
+                                 ENU=Ship-&to Addresses];
+                      RunObject=Page 301;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=ShipAddress }
+      { 60      ;2   ;Action    ;
+                      AccessByPermission=TableData 5050=R;
+                      CaptionML=[DAN=K&ontakt;
+                                 ENU=C&ontact];
+                      Image=ContactPerson;
+                      OnAction=BEGIN
+                                 ShowContact;
+                               END;
+                                }
+      { 45      ;2   ;Action    ;
+                      CaptionML=[DAN=Varere&ferencer;
+                                 ENU=Cross Re&ferences];
+                      RunObject=Page 5723;
+                      RunPageView=SORTING(Cross-Reference Type,Cross-Reference Type No.);
+                      RunPageLink=Cross-Reference Type=CONST(Customer),
+                                  Cross-Reference Type No.=FIELD(No.);
+                      Image=Change }
+      { 67      ;2   ;Action    ;
+                      Name=ApprovalEntries;
+                      CaptionML=[DAN=Godkendelser;
+                                 ENU=Approvals];
+                      Image=Approvals;
+                      OnAction=BEGIN
+                                 ApprovalsMgmt.OpenApprovalEntriesPage(RECORDID);
+                               END;
+                                }
+      { 100000000;2  ;Action    ;
+                      Name=Likvido Sync;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=Export;
+                      OnAction=VAR
+                                 Likvido@100000000 : Codeunit 50000;
+                               BEGIN
+                                 Likvido.RUN;
+                               END;
+                                }
+      { 100000001;2  ;Action    ;
+                      Name=Likvido Log;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=Log;
+                      OnAction=VAR
+                                 LikvidoLog@100000000 : Page 50000;
+                               BEGIN
+                                 LikvidoLog.RUN;
+                               END;
+                                }
+      { 44      ;1   ;ActionGroup;
+                      Name=ActionGroupCRM;
+                      CaptionML=[DAN=Dynamics CRM;
+                                 ENU=Dynamics CRM];
+                      Visible=CRMIntegrationEnabled }
+      { 41      ;2   ;Action    ;
+                      Name=CRMGotoAccount;
+                      CaptionML=[DAN=Konto;
+                                 ENU=Account];
+                      ToolTipML=[DAN=bn den sammenk‘dede Microsoft Dynamics CRM-konto.;
+                                 ENU=Open the coupled Microsoft Dynamics CRM account.];
+                      Image=CoupledCustomer;
+                      OnAction=VAR
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                               BEGIN
+                                 CRMIntegrationManagement.ShowCRMEntityFromRecordID(RECORDID);
+                               END;
+                                }
+      { 37      ;2   ;Action    ;
+                      Name=CRMSynchronizeNow;
+                      AccessByPermission=TableData 5331=IM;
+                      CaptionML=[DAN=Synkroniser nu;
+                                 ENU=Synchronize Now];
+                      ToolTipML=[DAN=Send eller hent opdaterede data til eller fra Microsoft Dynamics CRM.;
+                                 ENU=Send or get updated data to or from Microsoft Dynamics CRM.];
+                      Image=Refresh;
+                      OnAction=VAR
+                                 Customer@1000 : Record 18;
+                                 CRMIntegrationManagement@1001 : Codeunit 5330;
+                                 CustomerRecordRef@1003 : RecordRef;
+                               BEGIN
+                                 CurrPage.SETSELECTIONFILTER(Customer);
+                                 Customer.NEXT;
+
+                                 IF Customer.COUNT = 1 THEN
+                                   CRMIntegrationManagement.UpdateOneNow(Customer.RECORDID)
+                                 ELSE BEGIN
+                                   CustomerRecordRef.GETTABLE(Customer);
+                                   CRMIntegrationManagement.UpdateMultipleNow(CustomerRecordRef);
+                                 END
+                               END;
+                                }
+      { 97      ;2   ;Action    ;
+                      Name=UpdateStatisticsInCRM;
+                      CaptionML=[DAN=Opdat‚r kontostatistik;
+                                 ENU=Update Account Statistics];
+                      ToolTipML=[DAN=Send debitorstatistikdata til Microsoft Dynamics CRM til opdatering af faktaboksen Kontostatistik;
+                                 ENU=Send Customer Statistics data to Microsoft Dynamics CRM to update the Account Statistics factbox];
+                      Enabled=CRMIsCoupledToRecord;
+                      Image=UpdateXML;
+                      OnAction=VAR
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                               BEGIN
+                                 CRMIntegrationManagement.CreateOrUpdateCRMAccountStatistics(Rec);
+                               END;
+                                }
+      { 31      ;2   ;ActionGroup;
+                      Name=Coupling;
+                      CaptionML=[@@@=Coupling is a noun;
+                                 DAN=Sammenk‘dning;
+                                 ENU=Coupling];
+                      ToolTipML=[DAN=Opret, ret eller slet en sammenk‘dning mellem Microsoft Dynamics NAV-recorden og en Microsoft Dynamics CRM-post.;
+                                 ENU=Create, change, or delete a coupling between the Microsoft Dynamics NAV record and a Microsoft Dynamics CRM record.];
+                      Image=LinkAccount }
+      { 49      ;3   ;Action    ;
+                      Name=ManageCRMCoupling;
+                      AccessByPermission=TableData 5331=IM;
+                      CaptionML=[DAN=Konfigurer sammenk‘dning;
+                                 ENU=Set Up Coupling];
+                      ToolTipML=[DAN=Opret eller rediger sammenk‘dningen med en Microsoft Dynamics CRM-konto.;
+                                 ENU=Create or modify the coupling to a Microsoft Dynamics CRM account.];
+                      Image=LinkAccount;
+                      OnAction=VAR
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                               BEGIN
+                                 CRMIntegrationManagement.CreateOrUpdateCoupling(RECORDID);
+                               END;
+                                }
+      { 47      ;3   ;Action    ;
+                      Name=DeleteCRMCoupling;
+                      AccessByPermission=TableData 5331=IM;
+                      CaptionML=[DAN=Slet sammenk‘dning;
+                                 ENU=Delete Coupling];
+                      ToolTipML=[DAN=Slet sammenk‘dningen med en Microsoft Dynamics CRM-konto.;
+                                 ENU=Delete the coupling to a Microsoft Dynamics CRM account.];
+                      Enabled=CRMIsCoupledToRecord;
+                      Image=UnLinkAccount;
+                      OnAction=VAR
+                                 CRMCouplingManagement@1000 : Codeunit 5331;
+                               BEGIN
+                                 CRMCouplingManagement.RemoveCoupling(RECORDID);
+                               END;
+                                }
+      { 53      ;2   ;ActionGroup;
+                      Name=Create;
+                      CaptionML=[DAN=Opret;
+                                 ENU=Create];
+                      Image=NewCustomer }
+      { 57      ;3   ;Action    ;
+                      Name=CreateInCRM;
+                      CaptionML=[DAN=Opret konto i Dynamics CRM;
+                                 ENU=Create Account in Dynamics CRM];
+                      Image=NewCustomer;
+                      OnAction=VAR
+                                 Customer@1001 : Record 18;
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                                 CustomerRecordRef@1002 : RecordRef;
+                               BEGIN
+                                 CurrPage.SETSELECTIONFILTER(Customer);
+                                 Customer.NEXT;
+                                 CustomerRecordRef.GETTABLE(Customer);
+                                 CRMIntegrationManagement.CreateNewRecordsInCRM(CustomerRecordRef);
+                               END;
+                                }
+      { 17      ;3   ;Action    ;
+                      Name=CreateFromCRM;
+                      CaptionML=[DAN=Opret kreditor i Dynamics NAV;
+                                 ENU=Create Customer in Dynamics NAV];
+                      Image=NewCustomer;
+                      OnAction=VAR
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                               BEGIN
+                                 CRMIntegrationManagement.ManageCreateNewRecordFromCRM(DATABASE::Customer);
+                               END;
+                                }
+      { 9       ;1   ;ActionGroup;
+                      CaptionML=[DAN=Oversigt;
+                                 ENU=History];
+                      Image=History }
+      { 22      ;2   ;Action    ;
+                      Name=CustomerLedgerEntries;
+                      ShortCutKey=Ctrl+F7;
+                      CaptionML=[DAN=Post&er;
+                                 ENU=Ledger E&ntries];
+                      RunObject=Page 25;
+                      RunPageView=SORTING(Customer No.);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=Yes;
+                      Image=CustomerLedger;
+                      PromotedCategory=Process }
+      { 18      ;2   ;Action    ;
+                      ShortCutKey=F7;
+                      CaptionML=[DAN=Statistik;
+                                 ENU=Statistics];
+                      RunObject=Page 151;
+                      RunPageLink=No.=FIELD(No.),
+                                  Date Filter=FIELD(Date Filter),
+                                  Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                                  Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                      Promoted=Yes;
+                      Image=Statistics;
+                      PromotedCategory=Process }
+      { 21      ;2   ;Action    ;
+                      CaptionML=[DAN=Forfaldsoversig&t;
+                                 ENU=S&ales];
+                      RunObject=Page 155;
+                      RunPageLink=No.=FIELD(No.),
+                                  Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                                  Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                      Image=Sales }
+      { 19      ;2   ;Action    ;
+                      CaptionML=[DAN=Poststatistik;
+                                 ENU=Entry Statistics];
+                      RunObject=Page 302;
+                      RunPageLink=No.=FIELD(No.),
+                                  Date Filter=FIELD(Date Filter),
+                                  Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                                  Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                      Image=EntryStatistics }
+      { 63      ;2   ;Action    ;
+                      CaptionML=[DAN=Va&lutastatistik;
+                                 ENU=Statistics by C&urrencies];
+                      RunObject=Page 486;
+                      RunPageLink=Customer Filter=FIELD(No.),
+                                  Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                                  Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter),
+                                  Date Filter=FIELD(Date Filter);
+                      Image=Currencies }
+      { 6500    ;2   ;Action    ;
+                      CaptionML=[DAN=&Varesporingsposter;
+                                 ENU=Item &Tracking Entries];
+                      Image=ItemTrackingLedger;
+                      OnAction=VAR
+                                 ItemTrackingDocMgt@1001 : Codeunit 6503;
+                               BEGIN
+                                 ItemTrackingDocMgt.ShowItemTrackingForMasterData(1,"No.",'','','','','');
+                               END;
+                                }
+      { 24      ;1   ;ActionGroup;
+                      CaptionML=[DAN=&Salg;
+                                 ENU=S&ales];
+                      Image=Sales }
+      { 25      ;2   ;Action    ;
+                      Name=Sales_InvoiceDiscounts;
+                      CaptionML=[DAN=Fakturara&batter;
+                                 ENU=Invoice &Discounts];
+                      RunObject=Page 23;
+                      RunPageLink=Code=FIELD(Invoice Disc. Code);
+                      Image=CalculateInvoiceDiscount }
+      { 26      ;2   ;Action    ;
+                      Name=Sales_Prices;
+                      CaptionML=[DAN=Salgspriser;
+                                 ENU=Prices];
+                      RunObject=Page 7002;
+                      RunPageView=SORTING(Sales Type,Sales Code);
+                      RunPageLink=Sales Type=CONST(Customer),
+                                  Sales Code=FIELD(No.);
+                      Image=Price }
+      { 71      ;2   ;Action    ;
+                      Name=Sales_LineDiscounts;
+                      CaptionML=[DAN=Linjerabat;
+                                 ENU=Line Discounts];
+                      RunObject=Page 7004;
+                      RunPageView=SORTING(Sales Type,Sales Code);
+                      RunPageLink=Sales Type=CONST(Customer),
+                                  Sales Code=FIELD(No.);
+                      Image=LineDiscount }
+      { 82      ;2   ;Action    ;
+                      CaptionML=[DAN=Forudb&etalingsprocenter;
+                                 ENU=Prepa&yment Percentages];
+                      RunObject=Page 664;
+                      RunPageView=SORTING(Sales Type,Sales Code);
+                      RunPageLink=Sales Type=CONST(Customer),
+                                  Sales Code=FIELD(No.);
+                      Image=PrepaymentPercentages }
+      { 75      ;2   ;Action    ;
+                      CaptionML=[DAN=St&andarddeb.salgskoder;
+                                 ENU=S&td. Cust. Sales Codes];
+                      RunObject=Page 173;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=CodesList }
+      { 11      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Dokumenter;
+                                 ENU=Documents];
+                      Image=Documents }
+      { 27      ;2   ;Action    ;
+                      CaptionML=[DAN=Tilbud;
+                                 ENU=Quotes];
+                      RunObject=Page 9300;
+                      RunPageView=SORTING(Sell-to Customer No.);
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Image=Quote }
+      { 28      ;2   ;Action    ;
+                      CaptionML=[DAN=Ordrer;
+                                 ENU=Orders];
+                      RunObject=Page 9305;
+                      RunPageView=SORTING(Sell-to Customer No.);
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Image=Document }
+      { 70      ;2   ;Action    ;
+                      CaptionML=[DAN=Returvareordrer;
+                                 ENU=Return Orders];
+                      RunObject=Page 9304;
+                      RunPageView=SORTING(Sell-to Customer No.);
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Image=ReturnOrder }
+      { 76      ;2   ;ActionGroup;
+                      CaptionML=[DAN=Udstedte dokumenter;
+                                 ENU=Issued Documents];
+                      Image=Documents }
+      { 77      ;3   ;Action    ;
+                      CaptionML=[DAN=Udstedte ry&kkere;
+                                 ENU=Issued &Reminders];
+                      RunObject=Page 440;
+                      RunPageView=SORTING(Customer No.,Posting Date);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=OrderReminder }
+      { 78      ;3   ;Action    ;
+                      CaptionML=[DAN=Udstedte &rentenotaer;
+                                 ENU=Issued &Finance Charge Memos];
+                      RunObject=Page 452;
+                      RunPageView=SORTING(Customer No.,Posting Date);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=FinChargeMemo }
+      { 65      ;2   ;Action    ;
+                      CaptionML=[DAN=Rammeordrer;
+                                 ENU=Blanket Orders];
+                      RunObject=Page 9303;
+                      RunPageView=SORTING(Document Type,Sell-to Customer No.);
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Image=BlanketOrder }
+      { 13      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Kreditkort;
+                                 ENU=Credit Card];
+                      Image=CreditCard }
+      { 15      ;2   ;ActionGroup;
+                      CaptionML=[DAN=Kreditkort;
+                                 ENU=Credit Cards];
+                      Image=CreditCard }
+      { 85      ;3   ;Action    ;
+                      CaptionML=[DAN=K&reditkort;
+                                 ENU=C&redit Cards];
+                      RunObject=Page 828;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=CreditCard }
+      { 86      ;3   ;Action    ;
+                      CaptionML=[DAN=Transaktionslo&gfilposter for kreditkort;
+                                 ENU=Credit Cards Transaction Lo&g Entries];
+                      RunObject=Page 829;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=CreditCardLog }
+      { 14      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Service;
+                                 ENU=Service];
+                      Image=ServiceItem }
+      { 81      ;2   ;Action    ;
+                      CaptionML=[DAN=Serviceordrer;
+                                 ENU=Service Orders];
+                      RunObject=Page 9318;
+                      RunPageView=SORTING(Document Type,Customer No.);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=Document }
+      { 68      ;2   ;Action    ;
+                      CaptionML=[DAN=Servi&cekontrakter;
+                                 ENU=Ser&vice Contracts];
+                      RunObject=Page 6065;
+                      RunPageView=SORTING(Customer No.,Ship-to Code);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=ServiceAgreement }
+      { 69      ;2   ;Action    ;
+                      CaptionML=[DAN=Se&rviceartikler;
+                                 ENU=Service &Items];
+                      RunObject=Page 5988;
+                      RunPageView=SORTING(Customer No.,Ship-to Code,Item No.,Serial No.);
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Image=ServiceItem }
+      { 1900000005;0 ;ActionContainer;
+                      ActionContainerType=NewDocumentItems }
+      { 1902575205;1 ;Action    ;
+                      CaptionML=[DAN=Rammesalgsordre;
+                                 ENU=Blanket Sales Order];
+                      RunObject=Page 507;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=BlanketOrder;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1900246505;1 ;Action    ;
+                      CaptionML=[DAN=Salgstilbud;
+                                 ENU=Sales Quote];
+                      RunObject=Page 41;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=Yes;
+                      Image=Quote;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1906384905;1 ;Action    ;
+                      CaptionML=[DAN=Salgsfaktura;
+                                 ENU=Sales Invoice];
+                      RunObject=Page 43;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=Yes;
+                      Image=Invoice;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1904747105;1 ;Action    ;
+                      CaptionML=[DAN=Salgsordre;
+                                 ENU=Sales Order];
+                      RunObject=Page 42;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=Yes;
+                      Image=Document;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1902583505;1 ;Action    ;
+                      CaptionML=[DAN=Salgskreditnota;
+                                 ENU=Sales Credit Memo];
+                      RunObject=Page 44;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=CreditMemo;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1905163705;1 ;Action    ;
+                      CaptionML=[DAN=Salgsreturvareordre;
+                                 ENU=Sales Return Order];
+                      RunObject=Page 6630;
+                      RunPageLink=Sell-to Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=ReturnOrder;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1905185205;1 ;Action    ;
+                      CaptionML=[DAN=Servicetilbud;
+                                 ENU=Service Quote];
+                      RunObject=Page 5964;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=Quote;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1902079405;1 ;Action    ;
+                      CaptionML=[DAN=Servicefaktura;
+                                 ENU=Service Invoice];
+                      RunObject=Page 5933;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=Invoice;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1907102005;1 ;Action    ;
+                      CaptionML=[DAN=Serviceordre;
+                                 ENU=Service Order];
+                      RunObject=Page 5900;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=Document;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1901662105;1 ;Action    ;
+                      CaptionML=[DAN=Servicekreditnota;
+                                 ENU=Service Credit Memo];
+                      RunObject=Page 5935;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=CreditMemo;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1903839805;1 ;Action    ;
+                      CaptionML=[DAN=Rykkermeddelelse;
+                                 ENU=Reminder];
+                      RunObject=Page 434;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=Yes;
+                      Image=Reminder;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1901102005;1 ;Action    ;
+                      CaptionML=[DAN=Rentenota;
+                                 ENU=Finance Charge Memo];
+                      RunObject=Page 446;
+                      RunPageLink=Customer No.=FIELD(No.);
+                      Promoted=No;
+                      Image=FinChargeMemo;
+                      PromotedCategory=New;
+                      RunPageMode=Create }
+      { 1900000004;0 ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 55      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Anmod om godkendelse;
+                                 ENU=Request Approval];
+                      Image=SendApprovalRequest }
+      { 51      ;2   ;Action    ;
+                      Name=SendApprovalRequest;
+                      CaptionML=[DAN=Send go&dkendelsesanmodning;
+                                 ENU=Send A&pproval Request];
+                      Enabled=NOT OpenApprovalEntriesExist;
+                      Image=SendApprovalRequest;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 IF ApprovalsMgmt.CheckCustomerApprovalsWorkflowEnabled(Rec) THEN
+                                   ApprovalsMgmt.OnSendCustomerForApproval(Rec);
+                               END;
+                                }
+      { 39      ;2   ;Action    ;
+                      Name=CancelApprovalRequest;
+                      CaptionML=[DAN=Annuller godkendelsesan&modning;
+                                 ENU=Cancel Approval Re&quest];
+                      Enabled=OpenApprovalEntriesExist;
+                      Image=Cancel;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.OnCancelCustomerApprovalRequest(Rec);
+                               END;
+                                }
+      { 1900839804;1 ;Action    ;
+                      CaptionML=[DAN=Indbetalingskladde;
+                                 ENU=Cash Receipt Journal];
+                      RunObject=Page 255;
+                      Promoted=Yes;
+                      Image=CashReceiptJournal;
+                      PromotedCategory=Process }
+      { 1905171704;1 ;Action    ;
+                      CaptionML=[DAN=Salgskladde;
+                                 ENU=Sales Journal];
+                      RunObject=Page 253;
+                      Promoted=Yes;
+                      Image=Journals;
+                      PromotedCategory=Process }
+      { 1900000006;0 ;ActionContainer;
+                      ActionContainerType=Reports }
+      { 3       ;1   ;ActionGroup;
+                      CaptionML=[DAN=Generelt;
+                                 ENU=General] }
+      { 1905562606;2 ;Action    ;
+                      CaptionML=[DAN=Debitoroversigt;
+                                 ENU=Customer List];
+                      RunObject=Report 101;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1901007206;2 ;Action    ;
+                      CaptionML=[DAN=Debitorjournal;
+                                 ENU=Customer Register];
+                      RunObject=Report 103;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1907152806;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - top 10-liste;
+                                 ENU=Customer - Top 10 List];
+                      RunObject=Report 111;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 5       ;1   ;ActionGroup;
+                      CaptionML=[DAN=Salg;
+                                 ENU=Sales];
+                      Image=Sales }
+      { 1905727106;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - ordreoversigt;
+                                 ENU=Customer - Order Summary];
+                      RunObject=Report 107;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1900172506;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - ordrebeholdning;
+                                 ENU=Customer - Order Detail];
+                      RunObject=Report 108;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1906073506;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - salgsoversigt;
+                                 ENU=Customer - Sales List];
+                      RunObject=Report 119;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1904190506;2 ;Action    ;
+                      CaptionML=[DAN=Salgsstatistik;
+                                 ENU=Sales Statistics];
+                      RunObject=Report 112;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1900760706;2 ;Action    ;
+                      CaptionML=[DAN=Kunde/varestatistik;
+                                 ENU=Customer/Item Sales];
+                      RunObject=Report 113;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 7       ;1   ;ActionGroup;
+                      CaptionML=[DAN=konomistyring;
+                                 ENU=Financial Management];
+                      Image=Report }
+      { 1906871306;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - kontokort;
+                                 ENU=Customer - Detail Trial Bal.];
+                      RunObject=Report 104;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1907944606;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - forfaldsoversigt;
+                                 ENU=Customer - Summary Aging];
+                      RunObject=Report 105;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1906813206;2 ;Action    ;
+                      CaptionML=[DAN=Forfaldne debitorposter;
+                                 ENU=Customer Detailed Aging];
+                      RunObject=Report 106;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1055    ;2   ;Action    ;
+                      Name=Statement;
+                      CaptionML=[DAN=Kontoudtog;
+                                 ENU=Statement];
+                      RunObject=Codeunit 8810;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1903839806;2 ;Action    ;
+                      CaptionML=[DAN=Rykkermeddelelse;
+                                 ENU=Reminder];
+                      RunObject=Report 117;
+                      Promoted=No;
+                      Image=Reminder;
+                      PromotedCategory=Report }
+      { 1900711606;2 ;Action    ;
+                      CaptionML=[DAN=Aldersfordelte tilgodehavender;
+                                 ENU=Aged Accounts Receivable];
+                      RunObject=Report 120;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1902299006;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - saldo til dato;
+                                 ENU=Customer - Balance to Date];
+                      RunObject=Report 121;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1906359306;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - balance;
+                                 ENU=Customer - Trial Balance];
+                      RunObject=Report 129;
+                      Promoted=No;
+                      Image=Report;
+                      PromotedCategory=Report }
+      { 1904039606;2 ;Action    ;
+                      CaptionML=[DAN=Debitor - betalingskvittering;
+                                 ENU=Customer - Payment Receipt];
+                      RunObject=Report 211;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+    }
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 1   ;1   ;Group     ;
+                GroupType=Repeater }
+
+    { 2   ;2   ;Field     ;
+                SourceExpr="No." }
+
+    { 4   ;2   ;Field     ;
+                SourceExpr=Name }
+
+    { 40  ;2   ;Field     ;
+                SourceExpr="Responsibility Center" }
+
+    { 43  ;2   ;Field     ;
+                SourceExpr="Location Code" }
+
+    { 54  ;2   ;Field     ;
+                SourceExpr="Post Code";
+                Visible=FALSE }
+
+    { 30  ;2   ;Field     ;
+                SourceExpr="Country/Region Code";
+                Visible=FALSE }
+
+    { 6   ;2   ;Field     ;
+                SourceExpr="Phone No." }
+
+    { 32  ;2   ;Field     ;
+                SourceExpr="Fax No.";
+                Visible=FALSE }
+
+    { 79  ;2   ;Field     ;
+                SourceExpr="IC Partner Code";
+                Visible=FALSE }
+
+    { 34  ;2   ;Field     ;
+                SourceExpr=Contact }
+
+    { 36  ;2   ;Field     ;
+                SourceExpr="Salesperson Code";
+                Visible=FALSE }
+
+    { 38  ;2   ;Field     ;
+                SourceExpr="Customer Posting Group";
+                Visible=FALSE }
+
+    { 56  ;2   ;Field     ;
+                SourceExpr="Gen. Bus. Posting Group";
+                Visible=FALSE }
+
+    { 52  ;2   ;Field     ;
+                SourceExpr="VAT Bus. Posting Group";
+                Visible=FALSE }
+
+    { 46  ;2   ;Field     ;
+                SourceExpr="Customer Price Group";
+                Visible=FALSE }
+
+    { 72  ;2   ;Field     ;
+                SourceExpr="Customer Disc. Group";
+                Visible=FALSE }
+
+    { 8   ;2   ;Field     ;
+                SourceExpr="Payment Terms Code";
+                Visible=FALSE }
+
+    { 61  ;2   ;Field     ;
+                SourceExpr="Reminder Terms Code";
+                Visible=FALSE }
+
+    { 48  ;2   ;Field     ;
+                SourceExpr="Fin. Charge Terms Code";
+                Visible=FALSE }
+
+    { 10  ;2   ;Field     ;
+                SourceExpr="Currency Code";
+                Visible=FALSE }
+
+    { 50  ;2   ;Field     ;
+                SourceExpr="Language Code";
+                Visible=FALSE }
+
+    { 12  ;2   ;Field     ;
+                SourceExpr="Search Name" }
+
+    { 1102601000;2;Field  ;
+                SourceExpr="Credit Limit (LCY)";
+                Visible=FALSE }
+
+    { 1102601002;2;Field  ;
+                SourceExpr=Blocked;
+                Visible=FALSE }
+
+    { 200 ;2   ;Field     ;
+                ToolTipML=[DAN=Angiver, om adgangen til data skal begr‘nses for dataemnet i den daglige drift. Dette er eksempelvis nyttigt, n†r du vil beskytte data mod ‘ndringer, mens det kontrolleres, om de indeholder personlige oplysninger.;
+                           ENU=Specifies whether to limit access to data for the data subject during daily operations. This is useful, for example, when protecting data from changes while it is under privacy review.];
+                SourceExpr="Privacy Blocked";
+                Visible=FALSE }
+
+    { 1102601004;2;Field  ;
+                SourceExpr="Last Date Modified";
+                Visible=FALSE }
+
+    { 1102601006;2;Field  ;
+                SourceExpr="Application Method";
+                Visible=FALSE }
+
+    { 1102601008;2;Field  ;
+                SourceExpr="Combine Shipments";
+                Visible=FALSE }
+
+    { 1102601010;2;Field  ;
+                SourceExpr=Reserve;
+                Visible=FALSE }
+
+    { 1102601012;2;Field  ;
+                SourceExpr="Shipping Advice";
+                Visible=FALSE }
+
+    { 1102601014;2;Field  ;
+                SourceExpr="Shipping Agent Code";
+                Visible=FALSE }
+
+    { 1102601016;2;Field  ;
+                SourceExpr="Base Calendar Code";
+                Visible=FALSE }
+
+    { 1900000007;0;Container;
+                ContainerType=FactBoxArea }
+
+    { 99  ;1   ;Part      ;
+                SubPageLink=No.=FIELD(No.);
+                PagePartID=Page5360;
+                Visible=CRMIsCoupledToRecord;
+                PartType=Page }
+
+    { 35  ;1   ;Part      ;
+                SubPageLink=Source Type=CONST(Customer),
+                            Source No.=FIELD(No.);
+                PagePartID=Page875;
+                Visible=SocialListeningVisible;
+                PartType=Page }
+
+    { 33  ;1   ;Part      ;
+                SubPageLink=Source Type=CONST(Customer),
+                            Source No.=FIELD(No.);
+                PagePartID=Page876;
+                Visible=SocialListeningSetupVisible;
+                PartType=Page;
+                UpdatePropagation=Both }
+
+    { 1903720907;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9080;
+                Visible=TRUE;
+                PartType=Page }
+
+    { 1907234507;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9081;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1902018507;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9082;
+                Visible=TRUE;
+                PartType=Page }
+
+    { 1900316107;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9084;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1907829707;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9085;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1902613707;1;Part   ;
+                SubPageLink=No.=FIELD(No.),
+                            Currency Filter=FIELD(Currency Filter),
+                            Date Filter=FIELD(Date Filter),
+                            Global Dimension 1 Filter=FIELD(Global Dimension 1 Filter),
+                            Global Dimension 2 Filter=FIELD(Global Dimension 2 Filter);
+                PagePartID=Page9086;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1900383207;1;Part   ;
+                Visible=TRUE;
+                PartType=System;
+                SystemPartID=RecordLinks }
+
+    { 1905767507;1;Part   ;
+                Visible=TRUE;
+                PartType=System;
+                SystemPartID=Notes }
+
+  }
+  CODE
+  {
+    VAR
+      ApprovalsMgmt@1005 : Codeunit 1535;
+      SocialListeningSetupVisible@1000 : Boolean;
+      SocialListeningVisible@1001 : Boolean;
+      CRMIntegrationEnabled@1003 : Boolean;
+      CRMIsCoupledToRecord@1002 : Boolean;
+      OpenApprovalEntriesExist@1004 : Boolean;
+
+    PROCEDURE GetSelectionFilter@2() : Text;
+    VAR
+      Cust@1001 : Record 18;
+      SelectionFilterManagement@1002 : Codeunit 46;
+    BEGIN
+      CurrPage.SETSELECTIONFILTER(Cust);
+      EXIT(SelectionFilterManagement.GetSelectionFilterForCustomer(Cust));
+    END;
+
+    PROCEDURE SetSelection@1(VAR Cust@1000 : Record 18);
+    BEGIN
+      CurrPage.SETSELECTIONFILTER(Cust);
+    END;
+
+    LOCAL PROCEDURE SetSocialListeningFactboxVisibility@3();
+    VAR
+      SocialListeningMgt@1000 : Codeunit 871;
+    BEGIN
+      SocialListeningMgt.GetCustFactboxVisibility(Rec,SocialListeningSetupVisible,SocialListeningVisible);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Page 9305 Sales Order List
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26-06-20;
+    Time=14:13:36;
+    Modified=Yes;
+    Version List=NAVW19.00.00.44974;
+  }
+  PROPERTIES
+  {
+    Editable=No;
+    CaptionML=[DAN=Salgsordrer;
+               ENU=Sales Orders];
+    SourceTable=Table36;
+    SourceTableView=WHERE(Document Type=CONST(Order));
+    PageType=List;
+    CardPageID=Sales Order;
+    OnOpenPage=VAR
+                 SalesSetup@1000 : Record 311;
+                 CRMIntegrationManagement@1001 : Codeunit 5330;
+               BEGIN
+                 IF UserMgt.GetSalesFilter <> '' THEN BEGIN
+                   FILTERGROUP(2);
+                   SETRANGE("Responsibility Center",UserMgt.GetSalesFilter);
+                   FILTERGROUP(0);
+                 END;
+
+                 SETRANGE("Date Filter",0D,WORKDATE - 1);
+
+                 JobQueueActive := SalesSetup.JobQueueActive;
+                 CRMIntegrationEnabled := CRMIntegrationManagement.IsCRMIntegrationEnabled;
+               END;
+
+    OnAfterGetCurrRecord=BEGIN
+                           SetControlVisibility;
+                           CurrPage.IncomingDocAttachFactBox.PAGE.LoadDataFromRecord(Rec);
+                         END;
+
+    ActionList=ACTIONS
+    {
+      { 1900000003;0 ;ActionContainer;
+                      ActionContainerType=RelatedInformation }
+      { 1102601000;1 ;ActionGroup;
+                      CaptionML=[DAN=&Ordre;
+                                 ENU=O&rder];
+                      Image=Order }
+      { 100000000;2  ;Action    ;
+                      Name=Create Test;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=test;
+                      OnAction=VAR
+                                 Likvidocreatetest@100000000 : Codeunit 50001;
+                               BEGIN
+                                 Likvidocreatetest.RUN;
+                               END;
+                                }
+      { 1102601013;2 ;Action    ;
+                      AccessByPermission=TableData 348=R;
+                      ShortCutKey=Shift+Ctrl+D;
+                      CaptionML=[DAN=Dimensioner;
+                                 ENU=Dimensions];
+                      Image=Dimensions;
+                      OnAction=BEGIN
+                                 ShowDocDim;
+                               END;
+                                }
+      { 1102601006;2 ;Action    ;
+                      Name=Statistics;
+                      ShortCutKey=F7;
+                      CaptionML=[DAN=Statistik;
+                                 ENU=Statistics];
+                      Promoted=Yes;
+                      Image=Statistics;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 OpenSalesOrderStatistics;
+                               END;
+                                }
+      { 1102601014;2 ;Action    ;
+                      CaptionML=[DAN=God&kendelser;
+                                 ENU=A&pprovals];
+                      Image=Approvals;
+                      OnAction=VAR
+                                 ApprovalEntries@1001 : Page 658;
+                               BEGIN
+                                 ApprovalEntries.Setfilters(DATABASE::"Sales Header","Document Type","No.");
+                                 ApprovalEntries.RUN;
+                               END;
+                                }
+      { 1102601008;2 ;Action    ;
+                      CaptionML=[DAN=Be&m‘rkninger;
+                                 ENU=Co&mments];
+                      RunObject=Page 67;
+                      RunPageLink=Document Type=FIELD(Document Type),
+                                  No.=FIELD(No.),
+                                  Document Line No.=CONST(0);
+                      Image=ViewComments }
+      { 9       ;1   ;ActionGroup;
+                      CaptionML=[DAN=Dokumenter;
+                                 ENU=Documents];
+                      Image=Documents }
+      { 1102601009;2 ;Action    ;
+                      CaptionML=[DAN=Le&verancer;
+                                 ENU=S&hipments];
+                      RunObject=Page 142;
+                      RunPageView=SORTING(Order No.);
+                      RunPageLink=Order No.=FIELD(No.);
+                      Image=Shipment }
+      { 1102601010;2 ;Action    ;
+                      Name=PostedSalesInvoices;
+                      CaptionML=[DAN=Fakturaer;
+                                 ENU=Invoices];
+                      RunObject=Page 143;
+                      RunPageView=SORTING(Order No.);
+                      RunPageLink=Order No.=FIELD(No.);
+                      Image=Invoice }
+      { 1102601011;2 ;Action    ;
+                      Name=PostedSalesPrepmtInvoices;
+                      CaptionML=[DAN=For&udbetalingsfakturaer;
+                                 ENU=Prepa&yment Invoices];
+                      RunObject=Page 143;
+                      RunPageView=SORTING(Prepayment Order No.);
+                      RunPageLink=Prepayment Order No.=FIELD(No.);
+                      Image=PrepaymentInvoice }
+      { 1102601012;2 ;Action    ;
+                      CaptionML=[DAN=Forudbetalingskredi&tnotaer;
+                                 ENU=Prepayment Credi&t Memos];
+                      RunObject=Page 144;
+                      RunPageView=SORTING(Prepayment Order No.);
+                      RunPageLink=Prepayment Order No.=FIELD(No.);
+                      Image=PrepaymentCreditMemo }
+      { 10      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Lagersted;
+                                 ENU=Warehouse];
+                      Image=Warehouse }
+      { 1102601016;2 ;Action    ;
+                      CaptionML=[DAN=Lagerleverancelinjer;
+                                 ENU=Whse. Shipment Lines];
+                      RunObject=Page 7341;
+                      RunPageView=SORTING(Source Type,Source Subtype,Source No.,Source Line No.);
+                      RunPageLink=Source Type=CONST(37),
+                                  Source Subtype=FIELD(Document Type),
+                                  Source No.=FIELD(No.);
+                      Image=ShipmentLines }
+      { 1102601017;2 ;Action    ;
+                      CaptionML=[DAN=L&‘g-p†-lager/pluklinjer (lag.);
+                                 ENU=In&vt. Put-away/Pick Lines];
+                      RunObject=Page 5774;
+                      RunPageView=SORTING(Source Document,Source No.,Location Code);
+                      RunPageLink=Source Document=CONST(Sales Order),
+                                  Source No.=FIELD(No.);
+                      Image=PickLines }
+      { 32      ;1   ;ActionGroup;
+                      Name=ActionGroupCRM;
+                      CaptionML=[DAN=Dynamics CRM;
+                                 ENU=Dynamics CRM];
+                      Visible=CRMIntegrationEnabled }
+      { 31      ;2   ;Action    ;
+                      Name=CRMGoToSalesOrderListInNAV;
+                      CaptionML=[DAN=Salgsordreoversigt;
+                                 ENU=Sales Order List];
+                      ToolTipML=[DAN=bn siden Dynamics CRM-salgsordreliste i NAV;
+                                 ENU=Open the Dynamics CRM Sales Order List page in NAV];
+                      Visible=CRMIntegrationEnabled;
+                      Enabled=CRMIntegrationEnabled;
+                      Image=Order;
+                      OnAction=VAR
+                                 CRMSalesorder@1000 : Record 5353;
+                               BEGIN
+                                 PAGE.RUN(PAGE::"CRM Sales Order List",CRMSalesorder);
+                               END;
+                                }
+      { 1900000004;0 ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 12      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Frigiv;
+                                 ENU=Release];
+                      Image=ReleaseDoc }
+      { 1102601049;2 ;Action    ;
+                      Name=Release;
+                      ShortCutKey=Ctrl+F9;
+                      CaptionML=[DAN=&Frigiv;
+                                 ENU=Re&lease];
+                      Promoted=Yes;
+                      Image=ReleaseDoc;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 ReleaseSalesDoc@1000 : Codeunit 414;
+                               BEGIN
+                                 ReleaseSalesDoc.PerformManualRelease(Rec);
+                               END;
+                                }
+      { 1102601050;2 ;Action    ;
+                      Name=Reopen;
+                      CaptionML=[DAN=&bn igen;
+                                 ENU=Re&open];
+                      Promoted=Yes;
+                      Image=ReOpen;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 ReleaseSalesDoc@1001 : Codeunit 414;
+                               BEGIN
+                                 ReleaseSalesDoc.PerformManualReopen(Rec);
+                               END;
+                                }
+      { 1102601001;1 ;ActionGroup;
+                      CaptionML=[DAN=Fu&nktion;
+                                 ENU=F&unctions];
+                      Image=Action }
+      { 102     ;2   ;Action    ;
+                      CaptionML=[DAN=Pla&nl‘gning;
+                                 ENU=Pla&nning];
+                      Image=Planning;
+                      OnAction=VAR
+                                 SalesOrderPlanningForm@1001 : Page 99000883;
+                               BEGIN
+                                 SalesOrderPlanningForm.SetSalesOrder("No.");
+                                 SalesOrderPlanningForm.RUNMODAL;
+                               END;
+                                }
+      { 1102601020;2 ;Action    ;
+                      AccessByPermission=TableData 99000880=R;
+                      CaptionML=[DAN=Beregning af leverings&tid;
+                                 ENU=Order &Promising];
+                      Image=OrderPromising;
+                      OnAction=VAR
+                                 OrderPromisingLine@1000 : TEMPORARY Record 99000880;
+                               BEGIN
+                                 OrderPromisingLine.SETRANGE("Source Type","Document Type");
+                                 OrderPromisingLine.SETRANGE("Source ID","No.");
+                                 PAGE.RUNMODAL(PAGE::"Order Promising Lines",OrderPromisingLine);
+                               END;
+                                }
+      { 1102601053;2 ;Action    ;
+                      AccessByPermission=TableData 410=R;
+                      CaptionML=[DAN=Send IC-salgsordrebekr‘ftelse;
+                                 ENU=Send IC Sales Order Cnfmn.];
+                      Image=IntercompanyOrder;
+                      OnAction=VAR
+                                 ICInOutboxMgt@1000 : Codeunit 427;
+                                 ApprovalsMgmt@1003 : Codeunit 1535;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   ICInOutboxMgt.SendSalesDoc(Rec,FALSE);
+                               END;
+                                }
+      { 24      ;1   ;ActionGroup;
+                      CaptionML=[DAN=Anmod om godkendelse;
+                                 ENU=Request Approval] }
+      { 1102601046;2 ;Action    ;
+                      Name=SendApprovalRequest;
+                      CaptionML=[DAN=Send go&dkendelsesanmodning;
+                                 ENU=Send A&pproval Request];
+                      Enabled=NOT OpenApprovalEntriesExist;
+                      Image=SendApprovalRequest;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 IF ApprovalsMgmt.CheckSalesApprovalsWorkflowEnabled(Rec) THEN
+                                   ApprovalsMgmt.OnSendSalesDocForApproval(Rec);
+                               END;
+                                }
+      { 1102601047;2 ;Action    ;
+                      Name=CancelApprovalRequest;
+                      CaptionML=[DAN=Annuller godkendelsesan&modning;
+                                 ENU=Cancel Approval Re&quest];
+                      Enabled=OpenApprovalEntriesExist;
+                      Image=Cancel;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.OnCancelSalesApprovalRequest(Rec);
+                               END;
+                                }
+      { 3       ;1   ;ActionGroup;
+                      CaptionML=[DAN=Lagersted;
+                                 ENU=Warehouse];
+                      Image=Warehouse }
+      { 100     ;2   ;Action    ;
+                      AccessByPermission=TableData 7342=R;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Opret l&‘g-p†-lager (lager)/pluk (lager);
+                                 ENU=Create Inventor&y Put-away/Pick];
+                      Image=CreatePutawayPick;
+                      OnAction=BEGIN
+                                 CreateInvtPutAwayPick;
+
+                                 IF NOT FIND('=><') THEN
+                                   INIT;
+                               END;
+                                }
+      { 1102601043;2 ;Action    ;
+                      AccessByPermission=TableData 7320=R;
+                      CaptionML=[DAN=Opre&t lagerleverance;
+                                 ENU=Create &Whse. Shipment];
+                      Image=NewShipment;
+                      OnAction=VAR
+                                 GetSourceDocOutbound@1001 : Codeunit 5752;
+                               BEGIN
+                                 GetSourceDocOutbound.CreateFromSalesOrder(Rec);
+
+                                 IF NOT FIND('=><') THEN
+                                   INIT;
+                               END;
+                                }
+      { 49      ;1   ;ActionGroup;
+                      CaptionML=[DAN=&Bogf›ring;
+                                 ENU=P&osting];
+                      Image=Post }
+      { 1102601003;2 ;Action    ;
+                      Name=Post;
+                      ShortCutKey=F9;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=B&ogf›r;
+                                 ENU=P&ost];
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=PostOrder;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 SendToPosting(CODEUNIT::"Sales-Post (Yes/No)");
+                               END;
+                                }
+      { 1102601004;2 ;Action    ;
+                      ShortCutKey=Shift+F9;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Bogf›r og &udskriv;
+                                 ENU=Post and &Print];
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=PostPrint;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 SendToPosting(CODEUNIT::"Sales-Post + Print");
+                               END;
+                                }
+      { 14      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Bogf›r og mail;
+                                 ENU=Post and Email];
+                      Image=PostMail;
+                      OnAction=VAR
+                                 SalesPostPrint@1000 : Codeunit 82;
+                               BEGIN
+                                 SalesPostPrint.PostAndEmail(Rec);
+                               END;
+                                }
+      { 1102601002;2 ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Kontroller;
+                                 ENU=Test Report];
+                      Image=TestReport;
+                      OnAction=BEGIN
+                                 ReportPrint.PrintSalesHeader(Rec);
+                               END;
+                                }
+      { 50      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Masse&bogf›r;
+                                 ENU=Post &Batch];
+                      Promoted=Yes;
+                      Image=PostBatch;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 REPORT.RUNMODAL(REPORT::"Batch Post Sales Orders",TRUE,TRUE,Rec);
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+      { 8       ;2   ;Action    ;
+                      CaptionML=[DAN=Fjern fra opgavek›;
+                                 ENU=Remove From Job Queue];
+                      Visible=JobQueueActive;
+                      Image=RemoveLine;
+                      OnAction=BEGIN
+                                 CancelBackgroundPosting;
+                               END;
+                                }
+      { 22      ;2   ;Action    ;
+                      CaptionML=[DAN=Vis bogf›ring;
+                                 ENU=Preview Posting];
+                      Image=ViewPostedOrder;
+                      OnAction=BEGIN
+                                 ShowPreview
+                               END;
+                                }
+      { 150     ;1   ;ActionGroup;
+                      CaptionML=[DAN=U&dskriv;
+                                 ENU=&Print];
+                      Image=Print }
+      { 152     ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Arbejdsseddel;
+                                 ENU=Work Order];
+                      Image=Print;
+                      OnAction=BEGIN
+                                 DocPrint.PrintSalesOrder(Rec,Usage::"Work Order");
+                               END;
+                                }
+      { 7       ;2   ;Action    ;
+                      CaptionML=[DAN=Plukinstruktion;
+                                 ENU=Pick Instruction];
+                      Image=Print;
+                      OnAction=BEGIN
+                                 DocPrint.PrintSalesOrder(Rec,Usage::"Pick Instruction");
+                               END;
+                                }
+      { 19      ;1   ;ActionGroup;
+                      CaptionML=[DAN=&Ordrebekr‘ftelse;
+                                 ENU=&Order Confirmation];
+                      Image=Email }
+      { 18      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Mail bekr‘ftelse;
+                                 ENU=Email Confirmation];
+                      Image=Email;
+                      OnAction=BEGIN
+                                 DocPrint.EmailSalesHeader(Rec);
+                               END;
+                                }
+      { 151     ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[DAN=Udskriv bekr‘ftelse;
+                                 ENU=Print Confirmation];
+                      Promoted=Yes;
+                      Image=Print;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 DocPrint.PrintSalesOrder(Rec,Usage::"Order Confirmation");
+                               END;
+                                }
+      { 1900000006;0 ;ActionContainer;
+                      ActionContainerType=Reports }
+      { 1904702706;1 ;Action    ;
+                      CaptionML=[DAN=Disp. salgsreservation;
+                                 ENU=Sales Reservation Avail.];
+                      RunObject=Report 209;
+                      Promoted=Yes;
+                      Image=Report;
+                      PromotedCategory=Report }
+    }
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 1   ;1   ;Group     ;
+                GroupType=Repeater }
+
+    { 2   ;2   ;Field     ;
+                SourceExpr="No." }
+
+    { 4   ;2   ;Field     ;
+                SourceExpr="Sell-to Customer No." }
+
+    { 6   ;2   ;Field     ;
+                SourceExpr="Sell-to Customer Name" }
+
+    { 17  ;2   ;Field     ;
+                SourceExpr="External Document No." }
+
+    { 33  ;2   ;Field     ;
+                SourceExpr="Sell-to Post Code";
+                Visible=FALSE }
+
+    { 29  ;2   ;Field     ;
+                SourceExpr="Sell-to Country/Region Code";
+                Visible=FALSE }
+
+    { 41  ;2   ;Field     ;
+                SourceExpr="Sell-to Contact";
+                Visible=FALSE }
+
+    { 13  ;2   ;Field     ;
+                SourceExpr="Bill-to Customer No.";
+                Visible=FALSE }
+
+    { 15  ;2   ;Field     ;
+                SourceExpr="Bill-to Name";
+                Visible=FALSE }
+
+    { 39  ;2   ;Field     ;
+                SourceExpr="Bill-to Post Code";
+                Visible=FALSE }
+
+    { 35  ;2   ;Field     ;
+                SourceExpr="Bill-to Country/Region Code";
+                Visible=FALSE }
+
+    { 159 ;2   ;Field     ;
+                SourceExpr="Bill-to Contact";
+                Visible=FALSE }
+
+    { 155 ;2   ;Field     ;
+                SourceExpr="Ship-to Code";
+                Visible=FALSE }
+
+    { 153 ;2   ;Field     ;
+                SourceExpr="Ship-to Name";
+                Visible=FALSE }
+
+    { 27  ;2   ;Field     ;
+                SourceExpr="Ship-to Post Code";
+                Visible=FALSE }
+
+    { 23  ;2   ;Field     ;
+                SourceExpr="Ship-to Country/Region Code";
+                Visible=FALSE }
+
+    { 143 ;2   ;Field     ;
+                SourceExpr="Ship-to Contact";
+                Visible=FALSE }
+
+    { 139 ;2   ;Field     ;
+                SourceExpr="Posting Date";
+                Visible=FALSE }
+
+    { 121 ;2   ;Field     ;
+                SourceExpr="Shortcut Dimension 1 Code";
+                Visible=FALSE }
+
+    { 119 ;2   ;Field     ;
+                SourceExpr="Shortcut Dimension 2 Code";
+                Visible=FALSE }
+
+    { 123 ;2   ;Field     ;
+                SourceExpr="Location Code";
+                Visible=TRUE }
+
+    { 99  ;2   ;Field     ;
+                SourceExpr="Salesperson Code";
+                Visible=FALSE }
+
+    { 21  ;2   ;Field     ;
+                SourceExpr="Assigned User ID" }
+
+    { 11  ;2   ;Field     ;
+                SourceExpr="Currency Code";
+                Visible=FALSE }
+
+    { 1102601025;2;Field  ;
+                SourceExpr="Document Date";
+                Visible=FALSE }
+
+    { 1102601027;2;Field  ;
+                SourceExpr="Requested Delivery Date";
+                Visible=FALSE }
+
+    { 1102601005;2;Field  ;
+                SourceExpr="Campaign No.";
+                Visible=FALSE }
+
+    { 1102601029;2;Field  ;
+                SourceExpr=Status }
+
+    { 1102601039;2;Field  ;
+                SourceExpr="Payment Terms Code";
+                Visible=FALSE }
+
+    { 1102601041;2;Field  ;
+                SourceExpr="Due Date";
+                Visible=FALSE }
+
+    { 1102601054;2;Field  ;
+                SourceExpr="Payment Discount %";
+                Visible=FALSE }
+
+    { 1102601035;2;Field  ;
+                SourceExpr="Shipment Method Code";
+                Visible=FALSE }
+
+    { 1102601033;2;Field  ;
+                SourceExpr="Shipping Agent Code";
+                Visible=FALSE }
+
+    { 1102601031;2;Field  ;
+                SourceExpr="Shipment Date";
+                Visible=FALSE }
+
+    { 1102601037;2;Field  ;
+                SourceExpr="Shipping Advice";
+                Visible=FALSE }
+
+    { 16  ;2   ;Field     ;
+                SourceExpr="Completely Shipped" }
+
+    { 5   ;2   ;Field     ;
+                SourceExpr="Job Queue Status";
+                Visible=JobQueueActive }
+
+    { 1900000007;0;Container;
+                ContainerType=FactBoxArea }
+
+    { 1902018507;1;Part   ;
+                SubPageLink=No.=FIELD(Bill-to Customer No.),
+                            Date Filter=FIELD(Date Filter);
+                PagePartID=Page9082;
+                Visible=TRUE;
+                PartType=Page }
+
+    { 1900316107;1;Part   ;
+                SubPageLink=No.=FIELD(Bill-to Customer No.),
+                            Date Filter=FIELD(Date Filter);
+                PagePartID=Page9084;
+                Visible=TRUE;
+                PartType=Page }
+
+    { 20  ;1   ;Part      ;
+                Name=IncomingDocAttachFactBox;
+                PagePartID=Page193;
+                Visible=FALSE;
+                PartType=Page;
+                ShowFilter=No }
+
+    { 1900383207;1;Part   ;
+                Visible=FALSE;
+                PartType=System;
+                SystemPartID=RecordLinks }
+
+    { 1905767507;1;Part   ;
+                Visible=TRUE;
+                PartType=System;
+                SystemPartID=Notes }
+
+  }
+  CODE
+  {
+    VAR
+      DocPrint@1102601000 : Codeunit 229;
+      ReportPrint@1102601002 : Codeunit 228;
+      UserMgt@1000 : Codeunit 5700;
+      Usage@1001 : 'Order Confirmation,Work Order,Pick Instruction';
+      JobQueueActive@1004 : Boolean INDATASET;
+      OpenApprovalEntriesExist@1006 : Boolean;
+      CRMIntegrationEnabled@1002 : Boolean;
+
+    PROCEDURE ShowPreview@1();
+    VAR
+      SalesPostYesNo@1001 : Codeunit 81;
+    BEGIN
+      SalesPostYesNo.Preview(Rec);
+    END;
+
+    LOCAL PROCEDURE SetControlVisibility@5();
+    VAR
+      ApprovalsMgmt@1000 : Codeunit 1535;
+    BEGIN
+      OpenApprovalEntriesExist := ApprovalsMgmt.HasOpenApprovalEntries(RECORDID);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Page 50000 Likvido Log
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18-06-20;
+    Time=11:53:08;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+    SourceTable=Table50000;
+    PageType=List;
+    ActionList=ACTIONS
+    {
+      { 100000005;   ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 100000006;1  ;Action    ;
+                      Name=Download Json;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=Export;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 Jsonstream@100000000 : InStream;
+                                 Line@100000001 : Text;
+                                 Pos@100000002 : Integer;
+                                 File1@100000003 : File;
+                               BEGIN
+                                 Rec.CALCFIELDS(JSON);
+                                 IF Rec.JSON.HASVALUE THEN BEGIN
+                                   //File1.CREATE('c:\temp\testlh.json');
+                                   Rec.JSON.EXPORT('sfsdf.json',TRUE);
+
+                                 END;
+                                 //MESSAGE('Hello');
+                               END;
+                                }
+    }
+  }
+  CONTROLS
+  {
+    { 100000000;0;Container;
+                ContainerType=ContentArea }
+
+    { 100000001;1;Group   ;
+                Name=Group;
+                GroupType=Repeater }
+
+    { 100000002;2;Field   ;
+                SourceExpr="Batch ID" }
+
+    { 100000003;2;Field   ;
+                SourceExpr=Filename }
+
+    { 100000004;2;Field   ;
+                SourceExpr=JSON;
+                OnDrillDown=VAR
+                              FileManagement@100000000 : Codeunit 419;
+                              TempBlob@100000001 : Record 99008535;
+                              OutStrm@100000002 : OutStream;
+                              InStream@100000003 : InStream;
+                              FMyFilename@100000004 : Text;
+                            BEGIN
+                              //CALCFIELDS(JSON);
+                              //TempBlob.DELETEALL();
+                              //TempBlob.INIT;
+                              //TempBlob.Blob := JSON;
+                              //TempBlob.INSERT;
+                              //FileManagement.BLOBExport(TempBlob,'test.json',TRUE);
+                              //FileManagement.BLOBExportToServerFile(TempBlob,'c:\run\my\test.json');
+
+                              CALCFIELDS(JSON);
+                              Rec.JSON.CREATEINSTREAM(InStream,TEXTENCODING::UTF8);
+
+                              FMyFilename := 'c:\run\my\sdfsd.json';
+                              DOWNLOADFROMSTREAM(InStream,'InStream','','All Files (*.*)|*.*',FMyFilename)
+                            END;
+                             }
+
+    { 100000007;2;Field   ;
+                SourceExpr=StorageResponse }
+
+  }
+  CODE
+  {
+
+    BEGIN
+    END.
+  }
+}
+
+OBJECT Page 50001 Likvido Setup
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25-06-20;
+    Time=10:29:45;
+    Modified=Yes;
+    Version List=LIK1.00;
+  }
+  PROPERTIES
+  {
+    SourceTable=Table50001;
+    PageType=Card;
+    OnOpenPage=BEGIN
+                 RESET;
+                 IF NOT GET THEN BEGIN
+                   INIT;
+                   INSERT;
+                 END;
+               END;
+
+  }
+  CONTROLS
+  {
+    { 100000000;0;Container;
+                ContainerType=ContentArea }
+
+    { 100000001;1;Group   ;
+                Name=General;
+                GroupType=Group }
+
+    { 100000002;2;Field   ;
+                SourceExpr="Sas key" }
+
+    { 100000003;2;Field   ;
+                SourceExpr="Default Currency Code" }
+
+  }
+  CODE
+  {
+
+    BEGIN
+    END.
+  }
+}
+
