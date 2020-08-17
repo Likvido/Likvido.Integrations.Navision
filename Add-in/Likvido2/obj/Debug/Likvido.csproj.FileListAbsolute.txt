@@ -1,0 +1,15 @@
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Likvido.dll.config
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Likvido.dll
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Likvido.pdb
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.KeyVault.Core.dll
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.Storage.Blob.dll
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.Storage.Common.dll
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Newtonsoft.Json.dll
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.KeyVault.Core.xml
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.Storage.Blob.xml
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Microsoft.Azure.Storage.Common.xml
+C:\Users\lh\source\repos\Likvido2\bin\Debug\Newtonsoft.Json.xml
+C:\Users\lh\source\repos\Likvido2\obj\Debug\Likvido.csprojAssemblyReference.cache
+C:\Users\lh\source\repos\Likvido2\obj\Debug\Likvido.csproj.CopyComplete
+C:\Users\lh\source\repos\Likvido2\obj\Debug\Likvido.dll
+C:\Users\lh\source\repos\Likvido2\obj\Debug\Likvido.pdb
